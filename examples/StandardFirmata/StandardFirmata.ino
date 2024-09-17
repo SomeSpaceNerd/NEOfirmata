@@ -25,7 +25,15 @@
 
 #include <Servo.h>
 #include <Wire.h>
+#include <Adafruit_NeoPixel.h>
 #include <Firmata.h>
+
+Adafruit_NeoPixel* strip = NULL; // Use a pointer to allow dynamic reallocation
+uint8_t neopixelPin = 0;         // Default pin for NeoPixel
+uint16_t numPixels = 1;         // Default number of NeoPixels
+uint8_t colorOrder = NEO_GRB + NEO_KHZ800; // Default color order
+
+#define NEOPIXEL_SYSEX 0x70  // Custom SYSEX command for NeoPixel
 
 #define I2C_WRITE                   B00000000
 #define I2C_READ                    B00001000
@@ -473,6 +481,57 @@ void reportDigitalCallback(byte port, int value)
   // pins configured as analog
 }
 
+void handleNeoPixelSysex(byte argc, byte *argv) {
+  if (argc < 2) return;  // Ensure there's at least an action byte
+
+  byte action = argv[0];  // First byte defines the action (e.g., configure or set color)
+
+  switch (action) {
+    case 0x00:  // Setup NeoPixel (pin, numPixels, colorOrder)
+      if (argc < 4) return;  // Requires at least pin, numPixels, colorOrder
+      
+      neopixelPin = argv[1];        // Set the pin for NeoPixel
+      numPixels = argv[2];          // Set the number of NeoPixels
+      colorOrder = argv[3];         // Set the color order
+
+      // If a strip exists, free it before re-allocating
+      if (strip != NULL) {
+        delete strip;
+      }
+
+      // Re-initialize NeoPixel strip with new settings
+      strip = new Adafruit_NeoPixel(numPixels, neopixelPin, colorOrder);
+      strip->begin();
+      strip->show();  // Ensure all pixels are off
+
+      break;
+
+    case 0x01:  // Set a single pixel's color
+      if (argc < 5 || strip == NULL) return;  // Requires at least 4 bytes and strip must be initialized
+      byte pixelIndex = argv[1];
+      byte red = argv[2];
+      byte green = argv[3];
+      byte blue = argv[4];
+      strip->setPixelColor(pixelIndex, strip->Color(red, green, blue));
+      strip->show();
+      break;
+
+    case 0x02:  // Set the entire strip to a single color
+      if (argc < 4 || strip == NULL) return;  // Requires at least 3 bytes and strip must be initialized
+      red = argv[1];
+      green = argv[2];
+      blue = argv[3];
+      for (int i = 0; i < numPixels; i++) {
+        strip->setPixelColor(i, strip->Color(red, green, blue));
+      }
+      strip->show();
+      break;
+
+    default:
+      break;
+  }
+}
+
 /*==============================================================================
  * SYSEX-BASED commands
  *============================================================================*/
@@ -485,6 +544,10 @@ void sysexCallback(byte command, byte argc, byte *argv)
   byte data;
   int slaveRegister;
   unsigned int delayTime;
+
+  if (command == NEOPIXEL_SYSEX) {
+    handleNeoPixelSysex(argc, argv);
+  }
 
   switch (command) {
     case I2C_REQUEST:
@@ -756,7 +819,6 @@ void systemResetCallback()
 void setup()
 {
   Firmata.setFirmwareVersion(FIRMATA_FIRMWARE_MAJOR_VERSION, FIRMATA_FIRMWARE_MINOR_VERSION);
-
   Firmata.attach(ANALOG_MESSAGE, analogWriteCallback);
   Firmata.attach(DIGITAL_MESSAGE, digitalWriteCallback);
   Firmata.attach(REPORT_ANALOG, reportAnalogCallback);
@@ -765,6 +827,7 @@ void setup()
   Firmata.attach(SET_DIGITAL_PIN_VALUE, setPinValueCallback);
   Firmata.attach(START_SYSEX, sysexCallback);
   Firmata.attach(SYSTEM_RESET, systemResetCallback);
+  Firmata.begin();
 
   // to use a port other than Serial, such as Serial1 on an Arduino Leonardo or Mega,
   // Call begin(baud) on the alternate serial port and pass it to Firmata to begin like this:
